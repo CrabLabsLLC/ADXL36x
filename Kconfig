@@ -1,0 +1,60 @@
+# Copyright (c) 2025 Crab Labs LLC
+# SPDX-License-Identifier: Apache-2.0
+
+menuconfig ADXL36X
+	bool "ADXL36x ultralow-power 3-axis accelerometer"
+	default y
+	depends on DT_HAS_ADI_ADXL36X_ENABLED
+	select I2C
+	select GPIO
+	select SENSOR
+	help
+	  Enable the ADXL36x accelerometer driver.
+	  Supports ADXL362, ADXL363, ADXL366, and ADXL367 variants.
+
+if ADXL36X
+
+config ADXL36X_ODR
+	int "Default output data rate (0-5)"
+	range 0 5
+	default 3
+	help
+	  Default ODR selection:
+	    0 = 12.5 Hz
+	    1 = 25 Hz
+	    2 = 50 Hz
+	    3 = 100 Hz (default)
+	    4 = 200 Hz
+	    5 = 400 Hz
+
+config ADXL36X_RANGE
+	int "Default measurement range (0-2)"
+	range 0 2
+	default 0
+	help
+	  Default full-scale range:
+	    0 = +/- 2g (default)
+	    1 = +/- 4g
+	    2 = +/- 8g
+
+config ADXL36X_IRQ_ENABLE
+	bool "Enable interrupt GPIO support"
+	default y
+	help
+	  Enable support for the INT1 pin interrupt functionality.
+	  When disabled, the driver will not configure or use the INT1 GPIO
+	  even if specified in devicetree.
+
+config ADXL36X_CACHE_SIZE
+	int "Internal sample cache size (XYZ triplets)"
+	default 256
+	range 32 512
+	depends on ADXL36X_IRQ_ENABLE
+	help
+	  Number of XYZ sample triplets cached internally by the driver
+	  when using streaming mode. The driver auto-fetches FIFO data
+	  on interrupt and stores parsed samples in this cache.
+	  Each sample uses 6 bytes (3x int16_t).
+	  256 samples = 1536 bytes of RAM.
+
+endif # ADXL36X

@@ -1,0 +1,6 @@
+name: adxl36x
+build:
+  cmake: .
+  kconfig: Kconfig
+  settings:
+    dts_root: .

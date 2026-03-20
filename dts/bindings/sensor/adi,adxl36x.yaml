@@ -1,0 +1,51 @@
+# Copyright (c) 2025 Crab Labs LLC
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Analog Devices ADXL36x ultralow-power 3-axis accelerometer.
+
+  Supports ADXL362, ADXL363, ADXL366, and ADXL367 variants.
+  The variant property selects the chip-specific configuration
+  (scale factors, available ranges, etc.).
+
+  Uses I2C transport for communication and optional INT1 GPIO
+  for hardware interrupt support (FIFO watermark, data ready,
+  activity/inactivity detection).
+
+  Example devicetree node:
+    &i2c0 {
+      accel: adxl366@1d {
+        compatible = "adi,adxl36x";
+        reg = <0x1D>;
+        variant = "adxl366";
+        int1-gpios = <&gpio1 10 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+      };
+    };
+
+compatible: "adi,adxl36x"
+
+include: [sensor-device.yaml, i2c-device.yaml]
+
+properties:
+  variant:
+    type: string
+    required: true
+    enum:
+      - "adxl362"
+      - "adxl363"
+      - "adxl366"
+      - "adxl367"
+    description: |
+      Silicon variant on the board.
+        - adxl362: SPI-only, 2g/4g/8g, 270Hz max
+        - adxl363: I2C/SPI, 2g/4g/8g, 400Hz max
+        - adxl366: I2C/SPI, 2g/4g/8g, 400Hz max (ADXL367 pin-compatible)
+        - adxl367: I2C/SPI, 2g/4g/8g, 400Hz max
+
+  int1-gpios:
+    type: phandle-array
+    description: |
+      Optional INT1 interrupt GPIO.
+      The ADXL36x INT1 pin is configurable polarity.
+      When specified, the driver supports hardware interrupt
+      callbacks for FIFO watermark, data ready, and activity detection.
