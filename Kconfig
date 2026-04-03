@@ -14,6 +14,15 @@ menuconfig ADXL36X
 
 if ADXL36X
 
+config ADXL36X_LOG_LEVEL
+	int "ADXL36x log level"
+	default 0
+	range 0 4
+	depends on LOG
+	help
+	  Sets log level for ADXL36x driver.
+	  0 = OFF, 1 = ERR, 2 = WRN, 3 = INF, 4 = DBG
+
 config ADXL36X_ODR
 	int "Default output data rate (0-5)"
 	range 0 5

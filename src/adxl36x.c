@@ -28,9 +28,11 @@
 #include <zephyr/sys/atomic.h>
 #include <zephyr/sys/util.h>
 
+#define DT_DRV_COMPAT adi_adxl36x
+
 #include "adxl36x.h"
 
-LOG_MODULE_REGISTER(adxl36x, CONFIG_SENSOR_LOG_LEVEL);
+LOG_MODULE_REGISTER(adxl36x, CONFIG_ADXL36X_LOG_LEVEL);
 
 /* ---------------------------------------------------------------------------
  * Internal Constants
@@ -46,35 +48,35 @@ LOG_MODULE_REGISTER(adxl36x, CONFIG_SENSOR_LOG_LEVEL);
 
 struct adxl36x_data
 {
-	/* Cached XYZ (for Zephyr sensor API) */
+	// Cached XYZ (for Zephyr sensor API)
 	int16_t x_raw;
 	int16_t y_raw;
 	int16_t z_raw;
 
-	/* Tracked hardware settings */
+	// Tracked hardware settings
 	ADXL36xRange range;
 	ADXL36xODR odr;
 	uint8_t part_id;
 	atomic_t is_streaming;
 
 #ifdef CONFIG_ADXL36X_IRQ_ENABLE
-	/* GPIO interrupt */
+	// GPIO interrupt
 	struct gpio_callback gpio_cb;
 	ADXL36xInterruptCallback int_cb;
 	void* int_user_data;
-	const struct device* dev;   /* back-pointer for CONTAINER_OF */
+	const struct device* dev;   // back-pointer for CONTAINER_OF
 
-	/* Auto-fetch streaming */
-	struct k_work_q* workq;
+	// Auto-fetch streaming
 	struct k_work fetch_work;
 	ADXL36xSample cache[CONFIG_ADXL36X_CACHE_SIZE];
 	uint16_t cache_head;
 	uint16_t cache_tail;
 	uint16_t cache_count;
+	struct k_spinlock cache_lock;
 	ADXL36xDataCallback data_cb;
 	void* data_cb_user_data;
 	uint8_t fetch_buf[FETCH_CHUNK_BYTES];
-#endif /* CONFIG_ADXL36X_IRQ_ENABLE */
+#endif // CONFIG_ADXL36X_IRQ_ENABLE
 
 	atomic_t sample_count;
 };
@@ -121,14 +123,14 @@ int adxl36xReset(const struct device* const dev)
 {
 	struct adxl36x_data* const data = dev->data;
 
-	/* Clear streaming state -- hardware reset returns chip to standby */
+	// Clear streaming state -- hardware reset returns chip to standby
 	atomic_set(&data->is_streaming, 0);
 
 	const int status = regWrite(dev, ADXL36X_REG_SOFT_RESET, ADXL36X_RESET_CODE);
 	if (status < 0)
 		return status;
 
-	/* Datasheet: 5ms typical power-on time; ADI reference uses 20ms */
+	// Datasheet: 5ms typical power-on time; ADI reference uses 20ms
 	k_sleep(K_MSEC(10));
 	return 0;
 }
@@ -190,11 +192,11 @@ int adxl36xSetFIFOConfig(const struct device* const dev, const ADXL36xFIFOConfig
 	if (!config)
 		return -EINVAL;
 
-	/* Clamp watermark to 9-bit max */
+	// Clamp watermark to 9-bit max
 	const uint16_t watermark_value = (config->watermark > 0x1FF)
 	                                 ? 0x1FF : config->watermark;
 
-	/* FIFO_CONTROL: [6:3]=channel, [2]=watermark_msb, [1:0]=mode */
+	// FIFO_CONTROL: [6:3]=channel, [2]=watermark_msb, [1:0]=mode
 	const uint8_t fifo_control_byte =
 		((uint8_t)config->format << ADXL36X_FIFO_CTL_CHANNEL_POS)
 		| ((uint8_t)config->mode << ADXL36X_FIFO_CTL_MODE_POS)
@@ -213,7 +215,7 @@ int adxl36xSetActivity(const struct device* const dev, const ADXL36xActivityConf
 	if (!config)
 		return -EINVAL;
 
-	/* Threshold: 13-bit, upper 7 bits in THRESH_ACT_H, lower 6 in THRESH_ACT_L */
+	// Threshold: 13-bit, upper 7 bits in THRESH_ACT_H, lower 6 in THRESH_ACT_L
 	const uint16_t thresh = config->threshold & 0x1FFF;
 
 	int status = regWrite(dev, ADXL36X_REG_THRESH_ACT_H,
@@ -243,7 +245,7 @@ int adxl36xSetInactivity(const struct device* const dev, const ADXL36xActivityCo
 	if (!config)
 		return -EINVAL;
 
-	/* Threshold: 13-bit, upper 7 bits in THRESH_INACT_H, lower 6 in THRESH_INACT_L */
+	// Threshold: 13-bit, upper 7 bits in THRESH_INACT_H, lower 6 in THRESH_INACT_L
 	const uint16_t thresh = config->threshold & 0x1FFF;
 
 	int status = regWrite(dev, ADXL36X_REG_THRESH_INACT_H,
@@ -256,7 +258,7 @@ int adxl36xSetInactivity(const struct device* const dev, const ADXL36xActivityCo
 	if (status < 0)
 		return status;
 
-	/* Time: 16-bit big-endian (high byte first) */
+	// Time: 16-bit big-endian (high byte first)
 	status = regWrite(dev, ADXL36X_REG_TIME_INACT_H,
 	                  (uint8_t)(config->time_periods >> 8));
 	if (status < 0)
@@ -300,7 +302,7 @@ int adxl36xSetTapConfig(const struct device* const dev, const ADXL36xTapConfig* 
 	if (status < 0)
 		return status;
 
-	/* Set tap axis in AXIS_MASK[5:4], preserving activity/inactivity mask bits */
+	// Set tap axis in AXIS_MASK[5:4], preserving activity/inactivity mask bits
 	return regUpdate(dev, ADXL36X_REG_AXIS_MASK,
 	                 ADXL36X_AXIS_MASK_TAP_AXIS_MSK,
 	                 (uint8_t)config->axis << ADXL36X_AXIS_MASK_TAP_AXIS_POS);
@@ -337,7 +339,7 @@ int adxl36xGetOffset(const struct device* const dev, int8_t* const x_mg, int8_t*
 	if (status < 0)
 		return status;
 
-	/* Sign-extend 5-bit to int8_t */
+	// Sign-extend 5-bit to int8_t
 	*x_mg = (int8_t)((offset_byte & ADXL36X_OFFSET_MSK) << 3) >> 3;
 
 	status = regRead(dev, ADXL36X_REG_Y_OFFSET, &offset_byte);
@@ -386,7 +388,7 @@ int adxl36xGetSensitivity(const struct device* const dev, int8_t* const x_pct, i
 	if (status < 0)
 		return status;
 
-	/* Sign-extend 6-bit to int8_t */
+	// Sign-extend 6-bit to int8_t
 	*x_pct = (int8_t)((sensitivity_byte & ADXL36X_SENS_MSK) << 2) >> 2;
 
 	status = regRead(dev, ADXL36X_REG_Y_SENS, &sensitivity_byte);
@@ -418,7 +420,7 @@ int adxl36xReadTempRaw(const struct device* const dev, int16_t* const raw)
 	if (status < 0)
 		return status;
 
-	/* 14-bit signed: TEMP_H[7:0] = data[13:6], TEMP_L[7:2] = data[5:0] */
+	// 14-bit signed: TEMP_H[7:0] = data[13:6], TEMP_L[7:2] = data[5:0]
 	*raw = signExtend14(((uint16_t)temperature_bytes[0] << 6)
 	                    | (temperature_bytes[1] >> 2));
 	return 0;
@@ -460,7 +462,7 @@ int adxl36xReadADCRaw(const struct device* const dev, int16_t* const raw)
 	if (status < 0)
 		return status;
 
-	/* 14-bit signed: same format as temperature */
+	// 14-bit signed: same format as temperature
 	*raw = signExtend14(((uint16_t)adc_bytes[0] << 6) | (adc_bytes[1] >> 2));
 	return 0;
 }
@@ -470,6 +472,13 @@ int adxl36xEnableADC(const struct device* const dev, const bool is_enabled)
 	const uint8_t enable_bits = is_enabled ? ADXL36X_ADC_CTL_ADC_EN : 0;
 	return regUpdate(dev, ADXL36X_REG_ADC_CTL,
 	                 ADXL36X_ADC_CTL_ADC_EN, enable_bits);
+}
+
+int adxl36xSetFIFODataFormat(const struct device* const dev, const uint8_t format)
+{
+	return regUpdate(dev, ADXL36X_REG_ADC_CTL,
+	                 ADXL36X_ADC_CTL_FIFO_FMT_MSK,
+	                 format << ADXL36X_ADC_CTL_FIFO_FMT_POS);
 }
 
 /* ---------------------------------------------------------------------------
@@ -497,19 +506,19 @@ int adxl36xSetWakeupMode(const struct device* const dev, const bool is_enabled, 
 {
 	if (!is_enabled)
 	{
-		/* Clear wake-up bit in POWER_CTL */
+		// Clear wake-up bit in POWER_CTL
 		return regUpdate(dev, ADXL36X_REG_POWER_CTL,
 		                 ADXL36X_POWER_CTL_WAKEUP, 0);
 	}
 
-	/* Set wake-up rate in TIMER_CTL[7:6] */
+	// Set wake-up rate in TIMER_CTL[7:6]
 	const int status = regUpdate(dev, ADXL36X_REG_TIMER_CTL,
 	                             ADXL36X_TIMER_CTL_WAKEUP_RATE_MSK,
 	                             (uint8_t)rate << ADXL36X_TIMER_CTL_WAKEUP_RATE_POS);
 	if (status < 0)
 		return status;
 
-	/* Enable wake-up bit in POWER_CTL */
+	// Enable wake-up bit in POWER_CTL
 	return regUpdate(dev, ADXL36X_REG_POWER_CTL,
 	                 ADXL36X_POWER_CTL_WAKEUP,
 	                 ADXL36X_POWER_CTL_WAKEUP);
@@ -602,7 +611,7 @@ int adxl36xSetTempADCThresholds(const struct device* const dev, const ADXL36xTem
 	if (!config)
 		return -EINVAL;
 
-	/* Over threshold: 13-bit, high byte[6:0]=threshold[12:6], low byte[7:2]=threshold[5:0] */
+	// Over threshold: 13-bit, high byte[6:0]=threshold[12:6], low byte[7:2]=threshold[5:0]
 	const uint16_t over = config->over_threshold & 0x1FFF;
 
 	int status = regWrite(dev, ADXL36X_REG_TEMP_ADC_OVER_THRSH_H,
@@ -615,7 +624,7 @@ int adxl36xSetTempADCThresholds(const struct device* const dev, const ADXL36xTem
 	if (status < 0)
 		return status;
 
-	/* Under threshold: same format */
+	// Under threshold: same format
 	const uint16_t under = config->under_threshold & 0x1FFF;
 
 	status = regWrite(dev, ADXL36X_REG_TEMP_ADC_UNDER_THRSH_H,
@@ -628,7 +637,7 @@ int adxl36xSetTempADCThresholds(const struct device* const dev, const ADXL36xTem
 	if (status < 0)
 		return status;
 
-	/* Timer: upper nibble = inact_timer, lower nibble = act_timer */
+	// Timer: upper nibble = inact_timer, lower nibble = act_timer
 	const uint8_t timer = ((config->inact_timer & 0x0F) << ADXL36X_TEMP_ADC_TIMER_INACT_POS)
 	                     | (config->act_timer & 0x0F);
 
@@ -693,7 +702,7 @@ int adxl36xReadXYZ(const struct device* const dev, int16_t* const x, int16_t* co
 	if (status < 0)
 		return status;
 
-	/* 14-bit signed: DATA_H[7:0] = data[13:6], DATA_L[7:2] = data[5:0] */
+	// 14-bit signed: DATA_H[7:0] = data[13:6], DATA_L[7:2] = data[5:0]
 	const int16_t raw_x = signExtend14(((uint16_t)xyz_bytes[0] << 6)
 	                                   | (xyz_bytes[1] >> 2));
 	const int16_t raw_y = signExtend14(((uint16_t)xyz_bytes[2] << 6)
@@ -708,7 +717,7 @@ int adxl36xReadXYZ(const struct device* const dev, int16_t* const x, int16_t* co
 	if (z)
 		*z = raw_z;
 
-	/* Cache for Zephyr sensor API */
+	// Cache for Zephyr sensor API
 	struct adxl36x_data* const data = dev->data;
 	data->x_raw = raw_x;
 	data->y_raw = raw_y;
@@ -745,23 +754,6 @@ int adxl36xGetRevisionID(const struct device* const dev, uint8_t* const rev_id)
  * Public - Streaming (Auto-Fetch with Internal Cache)
  * ------------------------------------------------------------------------- */
 
-int adxl36xAttachWorkQueue(const struct device* const dev, struct k_work_q* const workq)
-{
-#ifdef CONFIG_ADXL36X_IRQ_ENABLE
-	if (!workq)
-		return -EINVAL;
-
-	struct adxl36x_data* const data = dev->data;
-	data->workq = workq;
-
-	return 0;
-#else
-	ARG_UNUSED(dev);
-	ARG_UNUSED(workq);
-	return -ENOTSUP;
-#endif
-}
-
 int adxl36xStartStreaming(const struct device* const dev, const ADXL36xFIFOConfig* const config)
 {
 #ifdef CONFIG_ADXL36X_IRQ_ENABLE
@@ -769,12 +761,6 @@ int adxl36xStartStreaming(const struct device* const dev, const ADXL36xFIFOConfi
 
 	if (!config)
 		return -EINVAL;
-
-	if (!data->workq)
-	{
-		LOG_ERR("No work queue attached - call adxl36xAttachWorkQueue first");
-		return -EINVAL;
-	}
 
 	const struct adxl36x_config* const device_config = dev->config;
 	if (!device_config->int1_gpio.port)
@@ -789,13 +775,13 @@ int adxl36xStartStreaming(const struct device* const dev, const ADXL36xFIFOConfi
 		return -EALREADY;
 	}
 
-	/* Flush cache */
+	// Flush cache
 	data->cache_head = 0;
 	data->cache_tail = 0;
 	data->cache_count = 0;
 	atomic_set(&data->sample_count, 0);
 
-	/* Configure FIFO */
+	// Configure FIFO
 	int status = adxl36xSetFIFOConfig(dev, config);
 	if (status < 0)
 	{
@@ -803,7 +789,7 @@ int adxl36xStartStreaming(const struct device* const dev, const ADXL36xFIFOConfi
 		return status;
 	}
 
-	/* On ADXL366/367, set FIFO format to 14-bit with channel ID */
+	// On ADXL366/367, set FIFO format to 14-bit with channel ID
 	if (data->part_id == ADXL36X_PARTID_366_VAL ||
 	    data->part_id == ADXL36X_PARTID_367_VAL)
 	{
@@ -814,7 +800,7 @@ int adxl36xStartStreaming(const struct device* const dev, const ADXL36xFIFOConfi
 			LOG_WRN("FIFO format config failed: %d (may be unsupported)", status);
 	}
 
-	/* Enable measurement */
+	// Enable measurement
 	status = adxl36xEnable(dev);
 	if (status < 0)
 	{
@@ -822,10 +808,11 @@ int adxl36xStartStreaming(const struct device* const dev, const ADXL36xFIFOConfi
 		return status;
 	}
 
-	/* Map FIFO watermark to INT1 */
+	// Map FIFO watermark to INT1, matching DTS GPIO polarity
+	const uint8_t int_polarity = adxl36xIsInterruptActiveLow(dev) ? 1 : 0;
 	status = adxl36xSetInterrupt1Sources(dev,
 	                                     ADXL36X_INTERRUPT_SRC_FIFO_WATERMARK,
-	                                     0);
+	                                     int_polarity);
 	if (status < 0)
 	{
 		LOG_ERR("INT1 source config failed: %d", status);
@@ -833,7 +820,7 @@ int adxl36xStartStreaming(const struct device* const dev, const ADXL36xFIFOConfi
 		return status;
 	}
 
-	/* Enable GPIO interrupt */
+	// Enable GPIO interrupt
 	status = adxl36xEnableInterrupt1(dev, true);
 	if (status < 0)
 	{
@@ -862,20 +849,19 @@ int adxl36xStopStreaming(const struct device* const dev)
 
 	atomic_set(&data->is_streaming, 0);
 
-	/* Disable GPIO interrupt */
+	// Disable GPIO interrupt
 	adxl36xEnableInterrupt1(dev, false);
 
-	/* Cancel pending fetch work */
-	if (data->workq)
+	// Cancel pending fetch work
 	{
 		struct k_work_sync sync;
 		k_work_cancel_sync(&data->fetch_work, &sync);
 	}
 
-	/* Enter standby */
+	// Enter standby
 	adxl36xDisable(dev);
 
-	/* Disable FIFO */
+	// Disable FIFO
 	const ADXL36xFIFOConfig fifo_off =
 	{
 		.mode = ADXL36X_FIFO_DISABLED,
@@ -918,9 +904,12 @@ int adxl36xGetCachedSamples(const struct device* const dev, ADXL36xSample* const
 {
 #ifdef CONFIG_ADXL36X_IRQ_ENABLE
 	if (!buf || max_count == 0)
-		return 0;
+		return -EINVAL;
 
 	struct adxl36x_data* const data = dev->data;
+
+	k_spinlock_key_t key = k_spin_lock(&data->cache_lock);
+
 	const size_t available = data->cache_count;
 	const size_t to_read = MIN(max_count, available);
 
@@ -930,6 +919,8 @@ int adxl36xGetCachedSamples(const struct device* const dev, ADXL36xSample* const
 		data->cache_tail = (data->cache_tail + 1) % CONFIG_ADXL36X_CACHE_SIZE;
 	}
 	data->cache_count -= to_read;
+
+	k_spin_unlock(&data->cache_lock, key);
 
 	return (int)to_read;
 #else
@@ -944,12 +935,95 @@ void adxl36xFlushCache(const struct device* const dev)
 {
 #ifdef CONFIG_ADXL36X_IRQ_ENABLE
 	struct adxl36x_data* const data = dev->data;
+	k_spinlock_key_t key = k_spin_lock(&data->cache_lock);
 	data->cache_head = 0;
 	data->cache_tail = 0;
 	data->cache_count = 0;
+	k_spin_unlock(&data->cache_lock, key);
 #else
 	ARG_UNUSED(dev);
 #endif
+}
+
+int adxl36xReadFIFOSamples(const struct device* const dev, ADXL36xSample* const buf, const size_t max_count)
+{
+	if (!buf || max_count == 0)
+		return -EINVAL;
+
+	struct adxl36x_data* const data = dev->data;
+	if (atomic_get(&data->is_streaming))
+	{
+		LOG_WRN("Cannot read FIFO while streaming is active");
+		return -EBUSY;
+	}
+
+	uint16_t entries = 0;
+	int status = adxl36xGetFIFOEntries(dev, &entries);
+	if (status < 0)
+		return status;
+	if (entries == 0)
+		return 0;
+
+	int16_t x = 0, y = 0, z = 0;
+	bool has_x = false, has_y = false, has_z = false;
+	size_t sample_count = 0;
+
+	uint8_t read_buf[FETCH_CHUNK_BYTES];
+
+	while (entries > 0 && sample_count < max_count)
+	{
+		const size_t chunk = MIN((size_t)entries, (size_t)FETCH_CHUNK_ENTRIES);
+		status = adxl36xReadFIFO(dev, read_buf,
+		                         chunk * ADXL36X_BYTES_PER_FIFO_ENTRY);
+		if (status < 0)
+			break;
+
+		for (size_t i = 0; i < chunk && sample_count < max_count; i++)
+		{
+			// I2C FIFO gives MSB first (channel ID + upper bits)
+			const uint8_t hi = read_buf[i * 2];
+			const uint8_t lo = read_buf[i * 2 + 1];
+			const uint8_t ch = (hi >> 6) & 0x03;
+
+			const int16_t raw = signExtend14(
+				((uint16_t)(hi & 0x3F) << 8) | lo);
+
+			switch (ch)
+			{
+			case ADXL36X_FIFO_AXIS_X:
+				x = raw;
+				has_x = true;
+				has_y = false;
+				has_z = false;
+				break;
+			case ADXL36X_FIFO_AXIS_Y:
+				y = raw;
+				has_y = true;
+				break;
+			case ADXL36X_FIFO_AXIS_Z:
+				z = raw;
+				has_z = true;
+				break;
+			default:
+				break;
+			}
+
+			if (has_x && has_y && has_z)
+			{
+				buf[sample_count].x = x;
+				buf[sample_count].y = y;
+				buf[sample_count].z = z;
+				sample_count++;
+				has_x = false;
+				has_y = false;
+				has_z = false;
+			}
+		}
+
+		entries -= (uint16_t)chunk;
+	}
+
+	return (int)sample_count;
 }
 
 int adxl36xSetDataCallback(const struct device* const dev, const ADXL36xDataCallback callback, void* const user_data)
@@ -976,11 +1050,7 @@ int adxl36xSetInterruptCallback(const struct device* const dev, const ADXL36xInt
 #ifdef CONFIG_ADXL36X_IRQ_ENABLE
 	struct adxl36x_data* const data = dev->data;
 
-	/* Disable interrupt during swap to prevent TOCTOU */
-	const struct adxl36x_config* const device_config = dev->config;
-	if (device_config->int1_gpio.port)
-		gpio_pin_interrupt_configure_dt(&device_config->int1_gpio, GPIO_INT_DISABLE);
-
+	// Just store the pointer; interrupt enable/disable is handled by adxl36xEnableInterrupt1()
 	data->int_cb = callback;
 	data->int_user_data = user_data;
 
@@ -1022,6 +1092,17 @@ bool adxl36xHasInterruptGPIO(const struct device* const dev)
 #ifdef CONFIG_ADXL36X_IRQ_ENABLE
 	const struct adxl36x_config* const device_config = dev->config;
 	return device_config->int1_gpio.port != NULL;
+#else
+	ARG_UNUSED(dev);
+	return false;
+#endif
+}
+
+bool adxl36xIsInterruptActiveLow(const struct device* const dev)
+{
+#ifdef CONFIG_ADXL36X_IRQ_ENABLE
+	const struct adxl36x_config* const device_config = dev->config;
+	return (device_config->int1_gpio.dt_flags & GPIO_ACTIVE_LOW) != 0;
 #else
 	ARG_UNUSED(dev);
 	return false;
@@ -1110,11 +1191,11 @@ static void gpioCallback(const struct device* const port, struct gpio_callback* 
 
 	atomic_inc(&data->sample_count);
 
-	/* Auto-submit fetch work when streaming */
-	if (atomic_get(&data->is_streaming) && data->workq)
-		k_work_submit_to_queue(data->workq, &data->fetch_work);
+	// Auto-submit fetch work when streaming
+	if (atomic_get(&data->is_streaming))
+		k_work_submit(&data->fetch_work);
 
-	/* ISR callback (snapshot to avoid TOCTOU) */
+	// ISR callback (snapshot to avoid TOCTOU)
 	const ADXL36xInterruptCallback cb_fn = data->int_cb;
 	void* const ud = data->int_user_data;
 	if (cb_fn)
@@ -1130,7 +1211,7 @@ static void fetchWorkHandler(struct k_work* const work)
 	if (!atomic_get(&data->is_streaming))
 		return;
 
-	/* Read FIFO entry count */
+	// Read FIFO entry count
 	uint16_t entries = 0;
 	if (adxl36xGetFIFOEntries(dev, &entries) < 0 || entries == 0)
 		return;
@@ -1151,11 +1232,12 @@ static void fetchWorkHandler(struct k_work* const work)
 
 		for (size_t entry_index = 0; entry_index < chunk; entry_index++)
 		{
-			const uint8_t data_low_byte = data->fetch_buf[entry_index * 2];
-			const uint8_t data_high_byte = data->fetch_buf[entry_index * 2 + 1];
+			// I2C FIFO gives MSB first (channel ID + upper bits)
+			const uint8_t data_high_byte = data->fetch_buf[entry_index * 2];
+			const uint8_t data_low_byte = data->fetch_buf[entry_index * 2 + 1];
 			const uint8_t channel_id = (data_high_byte >> 6) & 0x03;
 
-			/* Extract 14-bit value and sign-extend to int16_t */
+			// Extract 14-bit value and sign-extend to int16_t
 			const int16_t raw_axis_value = signExtend14(
 				((uint16_t)(data_high_byte & 0x3F) << 8) | data_low_byte);
 
@@ -1176,13 +1258,14 @@ static void fetchWorkHandler(struct k_work* const work)
 				has_z = true;
 				break;
 			default:
-				/* Temperature or unknown - skip */
+				// Temperature or unknown - skip
 				break;
 			}
 
-			/* Complete XYZ triplet -> push to cache */
+			// Complete XYZ triplet -> push to cache
 			if (has_x && has_y && has_z)
 			{
+				k_spinlock_key_t key = k_spin_lock(&data->cache_lock);
 				if (data->cache_count < CONFIG_ADXL36X_CACHE_SIZE)
 				{
 					data->cache[data->cache_head].x = x;
@@ -1194,15 +1277,21 @@ static void fetchWorkHandler(struct k_work* const work)
 				}
 				else
 				{
-					/* Overwrite oldest on overflow */
-					data->cache_tail = (data->cache_tail + 1)
-					                   % CONFIG_ADXL36X_CACHE_SIZE;
+					// Overwrite oldest on overflow
+					static bool is_overflow_logged;
+					if (!is_overflow_logged)
+					{
+						LOG_WRN("Sample cache overflow, dropping oldest samples");
+						is_overflow_logged = true;
+					}
 					data->cache[data->cache_head].x = x;
 					data->cache[data->cache_head].y = y;
 					data->cache[data->cache_head].z = z;
 					data->cache_head = (data->cache_head + 1)
 					                   % CONFIG_ADXL36X_CACHE_SIZE;
+					data->cache_tail = data->cache_head;
 				}
+				k_spin_unlock(&data->cache_lock, key);
 				has_x = false;
 				has_y = false;
 				has_z = false;
@@ -1212,13 +1301,13 @@ static void fetchWorkHandler(struct k_work* const work)
 		entries -= (uint16_t)chunk;
 	}
 
-	/* Notify application */
+	// Notify application
 	const ADXL36xDataCallback cb = data->data_cb;
 	void* const ud = data->data_cb_user_data;
 	if (cb && data->cache_count > 0)
 		cb(dev, data->cache_count, ud);
 }
-#endif /* CONFIG_ADXL36X_IRQ_ENABLE */
+#endif // CONFIG_ADXL36X_IRQ_ENABLE
 
 /* ---------------------------------------------------------------------------
  * Static - Zephyr Sensor API
@@ -1241,7 +1330,7 @@ static void rawToSensorValue(const int16_t raw, const ADXL36xRange range, struct
 {
 	const int32_t lsb_per_g = rangeLsbPerG(range);
 
-	/* micro-m/s^2 = raw * 9806650 / lsb_per_g */
+	// micro-m/s^2 = raw * 9806650 / lsb_per_g
 	const int64_t micro_ms2 = (int64_t)raw * 9806650LL / lsb_per_g;
 	val->val1 = (int32_t)(micro_ms2 / 1000000LL);
 	val->val2 = (int32_t)(micro_ms2 % 1000000LL);
@@ -1324,14 +1413,14 @@ static int adxl36xDeviceInit(const struct device* const dev)
 	const struct adxl36x_config* const device_config = dev->config;
 	struct adxl36x_data* const data = dev->data;
 
-	/* Verify I2C bus */
+	// Verify I2C bus
 	if (!i2c_is_ready_dt(&device_config->i2c))
 	{
 		LOG_ERR("I2C bus not ready");
 		return -ENODEV;
 	}
 
-	/* Verify Analog Devices ID */
+	// Verify Analog Devices ID
 	uint8_t device_id_byte;
 	int status = regRead(dev, ADXL36X_REG_DEVID_AD, &device_id_byte);
 	if (status < 0)
@@ -1347,7 +1436,7 @@ static int adxl36xDeviceInit(const struct device* const dev)
 		return -ENODEV;
 	}
 
-	/* Read Part ID for variant detection */
+	// Read Part ID for variant detection
 	status = regRead(dev, ADXL36X_REG_PARTID, &data->part_id);
 	if (status < 0)
 	{
@@ -1359,13 +1448,13 @@ static int adxl36xDeviceInit(const struct device* const dev)
 		LOG_INF("Part ID: 0x%02X", data->part_id);
 	}
 
-	/* Read Revision ID for logging */
+	// Read Revision ID for logging
 	uint8_t revision_id_byte;
 	status = regRead(dev, ADXL36X_REG_REVID, &revision_id_byte);
 	if (status == 0)
 		LOG_INF("Revision ID: 0x%02X", revision_id_byte);
 
-	/* Soft reset */
+	// Soft reset
 	status = adxl36xReset(dev);
 	if (status < 0)
 	{
@@ -1373,7 +1462,7 @@ static int adxl36xDeviceInit(const struct device* const dev)
 		return status;
 	}
 
-	/* Apply default ODR from Kconfig */
+	// Apply default ODR from Kconfig
 	status = adxl36xSetODR(dev, (ADXL36xODR)device_config->odr);
 	if (status < 0)
 	{
@@ -1381,7 +1470,7 @@ static int adxl36xDeviceInit(const struct device* const dev)
 		return status;
 	}
 
-	/* Apply default range from Kconfig */
+	// Apply default range from Kconfig
 	status = adxl36xSetRange(dev, (ADXL36xRange)device_config->range);
 	if (status < 0)
 	{
@@ -1393,7 +1482,6 @@ static int adxl36xDeviceInit(const struct device* const dev)
 
 #ifdef CONFIG_ADXL36X_IRQ_ENABLE
 	data->dev = dev;
-	data->workq = NULL;
 	data->int_cb = NULL;
 	data->int_user_data = NULL;
 	data->data_cb = NULL;
@@ -1430,12 +1518,15 @@ static int adxl36xDeviceInit(const struct device* const dev)
 			return status;
 		}
 
+		// Explicitly disable interrupt until streaming starts
+		gpio_pin_interrupt_configure_dt(&device_config->int1_gpio, GPIO_INT_DISABLE);
+
 		LOG_DBG("INT1 GPIO configured on %s pin %d",
 		        device_config->int1_gpio.port->name, device_config->int1_gpio.pin);
 	}
 #else
 	atomic_set(&data->sample_count, 0);
-#endif /* CONFIG_ADXL36X_IRQ_ENABLE */
+#endif // CONFIG_ADXL36X_IRQ_ENABLE
 
 	LOG_INF("ADXL36x initialized (addr 0x%02X, Part 0x%02X)",
 	        device_config->i2c.addr, data->part_id);
@@ -1445,8 +1536,6 @@ static int adxl36xDeviceInit(const struct device* const dev)
 /* ---------------------------------------------------------------------------
  * Device Tree Instantiation
  * ------------------------------------------------------------------------- */
-
-#define DT_DRV_COMPAT adi_adxl36x
 
 #define ADXL36X_DEFINE(inst)                                                    \
 	static struct adxl36x_data adxl36x_data_##inst;                         \

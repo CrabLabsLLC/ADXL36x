@@ -604,4 +604,4 @@ extern "C" {
 }
 #endif
 
-#endif /* ADXL36X_REGS_H */
+#endif // ADXL36X_REGS_H

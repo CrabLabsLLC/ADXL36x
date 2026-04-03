@@ -371,24 +371,12 @@ int adxl36xGetRevisionID(const struct device* const dev, uint8_t* const rev_id);
  * enables IRQ, and auto-fetches + caches parsed samples on each
  * watermark interrupt. Application reads from the cache.
  *
- * Requires: work queue attached via adxl36xAttachWorkQueue().
+ * Uses the system work queue for deferred I/O.
  * Requires: CONFIG_ADXL36X_IRQ_ENABLE=y
  *
  * While streaming is active, do not call adxl36xEnable/Disable or
  * adxl36xSetFIFOConfig directly - use adxl36xStopStreaming() first.
  * ============================================================================ */
-
-/**
- * @brief Attach a work queue for deferred data processing
- *
- * Must be called before adxl36xStartStreaming(). The driver submits
- * FIFO drain work to this queue on each interrupt.
- *
- * @param[in] dev   Zephyr device handle
- * @param[in] workq Work queue for deferred I/O. Must not be NULL.
- * @return 0 on success, negative errno on failure
- */
-int adxl36xAttachWorkQueue(const struct device* const dev, struct k_work_q* const workq);
 
 /**
  * @brief Start streaming with automatic FIFO drain
@@ -453,6 +441,20 @@ int adxl36xGetCachedSamples(const struct device* const dev, ADXL36xSample* const
 void adxl36xFlushCache(const struct device* const dev);
 
 /**
+ * @brief Read and parse FIFO samples directly
+ *
+ * Reads available FIFO entries, parses the 14-bit channel-ID format,
+ * and returns complete XYZ triplets. Does not use the internal cache
+ * or require streaming mode. Safe to call from work queue context.
+ *
+ * @param[in]  dev       Zephyr device handle
+ * @param[out] buf       Output buffer for parsed XYZ samples. Must not be NULL.
+ * @param[in]  max_count Maximum number of XYZ triplets to return
+ * @return Number of samples read (0 to max_count), or negative errno on failure
+ */
+int adxl36xReadFIFOSamples(const struct device* const dev, ADXL36xSample* const buf, const size_t max_count);
+
+/**
  * @brief Register data-ready callback
  *
  * Called from work queue context (not ISR) after the driver caches
@@ -478,6 +480,9 @@ int adxl36xSetDataCallback(const struct device* const dev, const ADXL36xDataCall
  *
  * @note When streaming is active, the driver auto-submits fetch work
  *       on each IRQ regardless of whether this callback is registered.
+ *
+ * @note This function disables the INT1 interrupt. Caller must call
+ *       adxl36xEnableInterrupt1(dev, true) to re-enable after registration.
  *
  * @param[in] dev       Zephyr device handle
  * @param[in] callback  Function to call from ISR, or NULL to disable
@@ -514,6 +519,14 @@ int adxl36xEnableInterrupt1(const struct device* const dev, const bool is_enable
  * @return true if INT1 GPIO is available
  */
 bool adxl36xHasInterruptGPIO(const struct device* const dev);
+
+/**
+ * @brief Check if INT1 GPIO is active-low (from DTS flags)
+ *
+ * @param[in] dev Zephyr device handle
+ * @return true if INT1 is configured as active-low
+ */
+bool adxl36xIsInterruptActiveLow(const struct device* const dev);
 
 /* ============================================================================
  * Sample Counting
@@ -692,6 +705,19 @@ int adxl36xReadADCRaw(const struct device* const dev, int16_t* const raw);
  * @return 0 on success, negative errno on failure
  */
 int adxl36xEnableADC(const struct device* const dev, const bool is_enabled);
+
+/**
+ * @brief Set FIFO data format (ADXL366/367 only)
+ *
+ * Configures ADC_CTL[7:6] to select FIFO sample format.
+ * Use ADXL36X_FIFO_FMT_14B_CHID for 14-bit with channel ID (required
+ * by adxl36xReadFIFOSamples()).
+ *
+ * @param[in] dev    Zephyr device handle
+ * @param[in] format One of ADXL36X_FIFO_FMT_* constants
+ * @return 0 on success, negative errno on failure
+ */
+int adxl36xSetFIFODataFormat(const struct device* const dev, const uint8_t format);
 
 /* ============================================================================
  * Self-Test
@@ -879,4 +905,4 @@ int adxl36xSetKeepAlive(const struct device* const dev, const uint8_t period_cou
 }
 #endif
 
-#endif /* ADXL36X_H */
+#endif // ADXL36X_H
