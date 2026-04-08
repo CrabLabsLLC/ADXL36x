@@ -26,13 +26,13 @@ config ADXL36X_LOG_LEVEL
 config ADXL36X_ODR
 	int "Default output data rate (0-5)"
 	range 0 5
-	default 3
+	default 2
 	help
 	  Default ODR selection:
 	    0 = 12.5 Hz
 	    1 = 25 Hz
-	    2 = 50 Hz
-	    3 = 100 Hz (default)
+	    2 = 50 Hz (default)
+	    3 = 100 Hz
 	    4 = 200 Hz
 	    5 = 400 Hz
 
