@@ -1,6 +1,3 @@
-/* Copyright (c) 2025 Crab Labs LLC */
-/* SPDX-License-Identifier: Apache-2.0 */
-
 /**
  * @file adxl36x.h
  * @brief ADXL36x accelerometer driver - public API
@@ -14,6 +11,9 @@
  *
  * @reviewer
  */
+
+/* Copyright (c) 2025 Crab Labs LLC */
+/* SPDX-License-Identifier: Apache-2.0 */
 
 #pragma once
 #ifndef ADXL36X_H

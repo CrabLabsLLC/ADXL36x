@@ -1,6 +1,3 @@
-/* Copyright (c) 2025 Crab Labs LLC */
-/* SPDX-License-Identifier: Apache-2.0 */
-
 /**
  * @file adxl36x.c
  * @brief ADXL36x accelerometer driver implementation
@@ -18,6 +15,9 @@
  *
  * @reviewer
  */
+
+/* Copyright (c) 2025 Crab Labs LLC */
+/* SPDX-License-Identifier: Apache-2.0 */
 
 #include <zephyr/device.h>
 #include <zephyr/drivers/gpio.h>

@@ -1,6 +1,3 @@
-/* Copyright (c) 2025 Crab Labs LLC */
-/* SPDX-License-Identifier: Apache-2.0 */
-
 /**
  * @file adxl36x_regs.h
  * @brief ADXL36x accelerometer register definitions
@@ -15,6 +12,9 @@
  *
  * @reviewer Claude <noreply@anthropic.com>
  */
+
+/* Copyright (c) 2025 Crab Labs LLC */
+/* SPDX-License-Identifier: Apache-2.0 */
 
 #pragma once
 #ifndef ADXL36X_REGS_H
